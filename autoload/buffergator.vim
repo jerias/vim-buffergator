@@ -122,8 +122,8 @@ let s:buffergator_buffer_line_symbols = {
 " dictionaries are not in any order, so store the order here
 let s:buffergator_buffer_line_symbols_order = [
     \ 'current',
-    \ 'modified',
     \ 'alternate',
+    \ 'modified',
     \ ]
 " 3}}}
 
@@ -1147,7 +1147,7 @@ function! s:NewBufferCatalogViewer()
             endfor
             highlight link BuffergatorSymbol Constant
             " highlight link BuffergatorAlternateEntry Function
-            " highlight link BuffergatorModifiedEntry String
+             highlight link BuffergatorModifiedEntry Special
             " highlight link BuffergatorCurrentEntry Keyword
             highlight link BuffergatorBufferNr LineNr
             let b:did_syntax = 1
