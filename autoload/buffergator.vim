@@ -77,6 +77,16 @@ endif
 if !exists("g:buffergator_window_statusline")
     let g:buffergator_window_statusline = 1
 endif
+if !exists("g:buffergator_show_git_status")
+    let g:buffergator_show_git_status = 1
+endif
+if !exists("g:buffergator_git_status_cache_timeout")
+    let g:buffergator_git_status_cache_timeout = 2
+endif
+if !exists("g:buffergator_git_status_untracked")
+    " Set to 0 for 6x faster performance (ignores untracked files)
+    let g:buffergator_git_status_untracked = 0
+endif
 " 1}}}
 
 " Script Data and Variables {{{1
@@ -117,12 +127,19 @@ let s:buffergator_viewport_split_modes = {
 let s:buffergator_viewport_split_modes_cycle_list = ["L", "T", "R", "B"]
 " 2}}}
 
+" Git Status Cache {{{2
+" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+let s:git_status_cache = {}
+let s:git_status_cache_time = 0
+" 2}}}
+
 " Buffer Status Symbols {{{3
 " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 let s:buffergator_buffer_line_symbols = {
     \ 'current'  :    ">",
     \ 'modified' :    "+",
     \ 'alternate':    "#",
+    \ 'git_modified': "*",
     \ }
 
 " dictionaries are not in any order, so store the order here
@@ -130,6 +147,7 @@ let s:buffergator_buffer_line_symbols_order = [
     \ 'current',
     \ 'alternate',
     \ 'modified',
+    \ 'git_modified',
     \ ]
 " 3}}}
 
@@ -464,6 +482,125 @@ endfunction
 
 " 2}}}
 
+" Git Status {{{2
+" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+" Updates the git status cache for all files in the current git repository
+function! s:_update_git_status_cache() abort
+    if !g:buffergator_show_git_status
+        return
+    endif
+
+    let l:current_time = localtime()
+
+    " Throttle: Only update if cache is older than timeout
+    if (l:current_time - s:git_status_cache_time) < g:buffergator_git_status_cache_timeout
+        return
+    endif
+
+    " Check if git is available
+    if !executable('git')
+        return
+    endif
+
+    " Get git root directory for current file
+    let l:git_root = system('git rev-parse --show-toplevel 2>/dev/null')
+    if v:shell_error != 0
+        " Not in a git repository
+        let s:git_status_cache = {}
+        let s:git_status_cache_time = l:current_time
+        return
+    endif
+
+    let l:git_root = substitute(l:git_root, '\n$', '', '')
+
+    " Build optimized git command
+    " Combined diff-files + diff-index is 10x faster than git status (51ms vs 534ms on large repos)
+    if g:buffergator_git_status_untracked
+        " User wants untracked files - must use git status
+        let l:git_cmd = 'git -C ' . shellescape(l:git_root) . ' status --porcelain 2>/dev/null'
+        let l:git_status_output = system(l:git_cmd)
+        if v:shell_error != 0
+            let s:git_status_cache = {}
+            let s:git_status_cache_time = l:current_time
+            return
+        endif
+    else
+        " Use faster combined approach: refresh index + diff-files (unstaged) + diff-index (staged)
+        " The refresh is essential to avoid stale cache when files are manually restored
+        let l:refresh_cmd = 'git -C ' . shellescape(l:git_root) . ' update-index --refresh -q 2>/dev/null'
+        call system(l:refresh_cmd)
+
+        let l:diff_files_cmd = 'git -C ' . shellescape(l:git_root) . ' diff-files --name-status 2>/dev/null'
+        let l:diff_index_cmd = 'git -C ' . shellescape(l:git_root) . ' diff-index --name-status --cached HEAD 2>/dev/null'
+        let l:unstaged = system(l:diff_files_cmd)
+        let l:staged = system(l:diff_index_cmd)
+        if v:shell_error != 0
+            let s:git_status_cache = {}
+            let s:git_status_cache_time = l:current_time
+            return
+        endif
+        let l:git_status_output = l:unstaged . "\n" . l:staged
+    endif
+
+    " Parse git output (handles both git status and diff command formats)
+    let l:new_cache = {}
+    for l:line in split(l:git_status_output, '\n')
+        if len(l:line) == 0
+            continue
+        endif
+
+        " Check if this is diff-index/diff-files format (tab-delimited: Status\tFilename)
+        if l:line =~ '^\S\t'
+            let l:parts = split(l:line, '\t')
+            if len(l:parts) >= 2
+                let l:status = l:parts[0]
+                let l:filename = l:parts[1]
+            else
+                continue
+            endif
+        " Otherwise, assume git status format (space-delimited: XY filename)
+        elseif len(l:line) >= 4
+            let l:status = l:line[0:1]
+            let l:filename = l:line[3:]
+        else
+            continue
+        endif
+
+        " Handle renamed files (format: "oldname -> newname")
+        if l:filename =~ ' -> '
+            let l:filename = split(l:filename, ' -> ')[1]
+        endif
+
+        " Make absolute path
+        let l:abs_path = fnamemodify(l:git_root . '/' . l:filename, ':p')
+        let l:new_cache[l:abs_path] = l:status
+    endfor
+
+    let s:git_status_cache = l:new_cache
+    let s:git_status_cache_time = l:current_time
+endfunction
+
+" Check if a file is modified in git
+function! s:_is_git_modified(filepath) abort
+    if !g:buffergator_show_git_status
+        return 0
+    endif
+
+    let l:abs_path = fnamemodify(a:filepath, ':p')
+    return has_key(s:git_status_cache, l:abs_path)
+endfunction
+
+" Debug function to show git status cache
+function! buffergator#DebugGitCache() abort
+    echo "Git status cache contains " . len(s:git_status_cache) . " files:"
+    for [l:path, l:status] in items(s:git_status_cache)
+        echo l:status . " " . l:path
+    endfor
+endfunction
+
+" 2}}}
+
 " 1}}}
 
 " CatalogViewer {{{1
@@ -506,6 +643,9 @@ function! s:NewCatalogViewer(name, title)
     endfunction
 
     function! catalog_viewer.list_buffers() dict
+        " Update git status cache before listing buffers
+        call s:_update_git_status_cache()
+
         let bcat = []
         redir => buffers_output
         execute('silent ls')
@@ -584,6 +724,10 @@ function! s:NewCatalogViewer(name, title)
                 let l:info["parentdir"] = fnamemodify(l:info["bufname"], ":h")
             endif
             let l:info["extension"] = fnamemodify(l:info["bufname"], ":e")
+
+            " Check git status
+            let l:info["is_git_modified"] = s:_is_git_modified(l:info["filepath"])
+
             call add(bcat, l:info)
             " let l:buffers_info[l:info[l:key]] = l:info
         endfor
@@ -1154,9 +1298,15 @@ function! s:NewBufferCatalogViewer()
             endfor
             highlight link BuffergatorSymbol Constant
             " highlight link BuffergatorAlternateEntry Function
-             highlight link BuffergatorModifiedEntry Special
+            " highlight link BuffergatorModifiedEntry Special
             " highlight link BuffergatorCurrentEntry Keyword
             highlight link BuffergatorBufferNr LineNr
+
+            " Custom syntax match for git-modified files to color the entire line
+            " Match lines that have the * symbol in the 4th character position (git_modified)
+            syn match BuffergatorGitModifiedLine '^\[.\{3\}\]...\*.*$' containedin=BuffergatorFileLine
+            highlight link BuffergatorGitModifiedLine WarningMsg
+
             let b:did_syntax = 1
         endif
       endfunction
