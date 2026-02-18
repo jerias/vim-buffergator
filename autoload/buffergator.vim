@@ -1302,10 +1302,18 @@ function! s:NewBufferCatalogViewer()
             " highlight link BuffergatorCurrentEntry Keyword
             highlight link BuffergatorBufferNr LineNr
 
-            " Custom syntax match for git-modified files to color the entire line
-            " Match lines that have the * symbol in the 4th character position (git_modified)
+            " Color the line for git-modified files (differs from HEAD in git).
             syn match BuffergatorGitModifiedLine '^\[.\{3\}\]...\*.*$' containedin=BuffergatorFileLine
             highlight link BuffergatorGitModifiedLine WarningMsg
+
+            " Color the line for vim-modified (unsaved) buffers.
+            syn match BuffergatorBufModifiedLine '^\[.\{3\}\]..+.*$' containedin=BuffergatorFileLine
+            highlight link BuffergatorBufModifiedLine Special
+
+            " Color the line for buffers that are both vim-modified AND git-modified.
+            " Defined last so it takes priority over both rules above.
+            syn match BuffergatorBothModifiedLine '^\[.\{3\}\]..+\*.*$' containedin=BuffergatorFileLine
+            highlight link BuffergatorBothModifiedLine Error
 
             let b:did_syntax = 1
         endif
